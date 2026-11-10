@@ -68,7 +68,9 @@ jobs:
             test -f apps/lms/lms/www/_lms.html
             test -f sites/assets/assets.json
             test -d sites/assets/lms/frontend
-            command -v nginx-entrypoint.sh wait-for-it jq curl start.sh'
+            for c in nginx-entrypoint.sh wait-for-it jq curl start.sh; do
+              command -v "$c" || { echo "missing: $c"; exit 1; }
+            done'
 
       - name: Push
         run: docker push "$IMAGE:$LMS_REF"
