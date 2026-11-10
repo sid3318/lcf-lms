@@ -62,7 +62,7 @@ jobs:
           up "$OLD"
           login
           csrf=$(curl -sf -b jar localhost:8080/app | grep -o 'csrf_token = "[^"]*"' | cut -d'"' -f2)
-          api() { curl -sf -b jar -X "$1" -H "X-Frappe-CSRF-Token: $csrf" -H 'Content-Type: application/json' -d "$3" "localhost:8080/api/resource/$2"; }
+          api() { curl -sf -b jar -X "$1" -H "X-Frappe-CSRF-Token: $csrf" -H 'Content-Type: application/json' -d "$3" "localhost:8080/api/resource/${2// /%20}"; }
           api POST "LMS Course" '{"title":"Rehearsal course","short_introduction":"x","description":"x","published":1}' >/dev/null
           chapter=$(api POST "Course Chapter" '{"title":"Chapter one","course":"rehearsal-course"}' | jq -r .data.name)
           api PUT "LMS Course/rehearsal-course" "{\"chapters\":[{\"chapter\":\"$chapter\"}]}" >/dev/null
