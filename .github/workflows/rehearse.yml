@@ -1,0 +1,93 @@
+name: Rehearse upgrade
+
+# Runs the production upgrade end to end on a throwaway site, so problems show up here and not on
+# the live LMS: site on the old image, add a course, switch to the new image, migrate, check it serves.
+on:
+  workflow_dispatch:
+    inputs:
+      from_image:
+        description: Image production runs today
+        default: ghcr.io/frappe/lms:v2.52.0
+      to_image:
+        description: Image to upgrade to
+        default: ghcr.io/sid3318/lcf-lms:v15.0.0
+
+jobs:
+  rehearse:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    env:
+      SITE: lms.test
+      OLD: ${{ inputs.from_image }}
+      NEW: ${{ inputs.to_image }}
+    steps:
+      - name: Rehearse
+        run: |
+          set -euo pipefail
+          vol=(-v sites:/home/frappe/frappe-bench/sites)
+          in_image() { docker run --rm --network lms -e SITE "${vol[@]}" "$1" bash -ec "$2"; }
+          # The three app containers, started the way the Dokploy template starts them.
+          up() {
+            docker rm -f backend websocket frontend >/dev/null 2>&1 || true
+            docker run -d --name backend --network lms "${vol[@]}" "$1"
+            docker run -d --name websocket --network lms "${vol[@]}" "$1" node /home/frappe/frappe-bench/apps/frappe/socketio.js
+            docker run -d --name frontend --network lms -p 8080:8080 "${vol[@]}" \
+              -e BACKEND=backend:8000 -e SOCKETIO=websocket:9000 -e FRAPPE_SITE_NAME_HEADER="$SITE" \
+              "$1" nginx-entrypoint.sh
+            for _ in $(seq 60); do curl -sf localhost:8080/api/method/ping >/dev/null && return; sleep 3; done
+            echo "site did not come up"; exit 1
+          }
+          login() { curl -sf -c jar -d 'usr=Administrator&pwd=admin' localhost:8080/api/method/login >/dev/null; }
+
+          docker network create lms
+          docker run -d --name db --network lms -e MARIADB_ROOT_PASSWORD=root mariadb:11.8.6 \
+            --character-set-server=utf8mb4 --collation-server=utf8mb4_unicode_ci --skip-character-set-client-handshake
+          docker run -d --name redis --network lms redis:6.2-alpine
+          until docker exec db healthcheck.sh --connect --innodb_initialized; do sleep 3; done
+
+          echo "::group::Create the site on $OLD"
+          in_image "$OLD" '
+            ls -1 apps > sites/apps.txt
+            bench set-config -g db_host db
+            bench set-config -gp db_port 3306
+            for q in cache queue socketio; do bench set-config -g redis_$q redis://redis:6379; done
+            bench set-config -gp socketio_port 9000
+            sed -i "s/^required_apps.*/required_apps = []/" apps/lms/lms/hooks.py
+            bench new-site --mariadb-user-host-login-scope="%" --admin-password=admin --db-root-username=root --db-root-password=root --install-app lms "$SITE"
+            bench --site "$SITE" enable-scheduler
+            bench --site "$SITE" list-apps'
+          echo "::endgroup::"
+
+          echo "::group::Old stack: add a course"
+          up "$OLD"
+          login
+          csrf=$(curl -sf -b jar localhost:8080/app | grep -o 'csrf_token = "[^"]*"' | cut -d'"' -f2)
+          api() { curl -sf -b jar -X "$1" -H "X-Frappe-CSRF-Token: $csrf" -H 'Content-Type: application/json' -d "$3" "localhost:8080/api/resource/$2"; }
+          api POST "LMS Course" '{"title":"Rehearsal course","short_introduction":"x","description":"x","published":1}' >/dev/null
+          chapter=$(api POST "Course Chapter" '{"title":"Chapter one","course":"rehearsal-course"}' | jq -r .data.name)
+          api PUT "LMS Course/rehearsal-course" "{\"chapters\":[{\"chapter\":\"$chapter\"}]}" >/dev/null
+          lesson=$(api POST "Course Lesson" "{\"title\":\"Lesson one\",\"chapter\":\"$chapter\",\"course\":\"rehearsal-course\",\"content\":\"{\\\"blocks\\\":[{\\\"type\\\":\\\"paragraph\\\",\\\"data\\\":{\\\"text\\\":\\\"hello\\\"}}]}\"}" | jq -r .data.name)
+          api PUT "Course Chapter/$chapter" "{\"lessons\":[{\"lesson\":\"$lesson\"}]}" >/dev/null
+          echo "::endgroup::"
+
+          echo "::group::Upgrade to $NEW"
+          docker rm -f backend websocket frontend >/dev/null
+          in_image "$NEW" 'ls -1 apps > sites/apps.txt; bench --site all migrate; bench --site "$SITE" list-apps'
+          up "$NEW"
+          echo "::endgroup::"
+
+          echo "::group::Check"
+          login
+          curl -sf -b jar localhost:8080/api/method/frappe.utils.change_log.get_versions | jq -c '.message|map_values(.version)'
+          curl -sf -X POST -H 'Content-Type: application/json' -d '{"filters":{"published":1}}' \
+            localhost:8080/api/method/lms.lms.utils.get_courses | jq -e '.message|map(.name)|index("rehearsal-course")'
+          curl -sf -b jar "localhost:8080/api/method/lms.lms.utils.get_course_outline?course=rehearsal-course" \
+            | jq -e '.message[0].lessons[0].title == "Lesson one"'
+          asset=$(curl -sf localhost:8080/lms | grep -o '/assets/lms/frontend/assets/[^"]*' | head -1)
+          curl -sf -o /dev/null "localhost:8080$asset" && echo "asset served: $asset"
+          echo "::endgroup::"
+          echo "REHEARSAL OK"
+
+      - name: Logs
+        if: failure()
+        run: for c in backend frontend db; do echo "=== $c"; docker logs --tail 60 $c 2>&1 || true; done

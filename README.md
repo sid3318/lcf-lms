@@ -19,8 +19,10 @@ VERSION=v15.0.0
 ## Upgrade
 
 Edit `LMS_REF` (and `FRAPPE_BRANCH` if the release line changes) in `.github/workflows/build.yml`
-and push to `main`. The image appears under the new tag after about 20 minutes. Then change `VERSION`
-in Dokploy, back up, deploy, and run `bench --site all migrate`.
+and push to `main`. The image appears under the new tag after about 10 minutes. Then run the
+**Rehearse upgrade** workflow from the Actions tab: it upgrades a throwaway site from the old image to
+the new one and checks it still serves. Only then change `VERSION` in Dokploy, back up, deploy, and run
+`bench --site all migrate`.
 
 The package must be public (GitHub > Packages > lcf-lms > Package settings > Change visibility)
 or Dokploy cannot pull it without registry credentials.
