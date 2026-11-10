@@ -90,8 +90,8 @@ jobs:
             localhost:8080/api/method/lms.lms.utils.get_courses | jq -e '.message|map(.name)|index("rehearsal-course")'
           curl -sf -b jar "localhost:8080/api/method/lms.lms.utils.get_course_outline?course=rehearsal-course" \
             | jq -e '.message[0].lessons[0].title == "Lesson one"'
-          asset=$(curl -sf localhost:8080/lms | grep -o '/assets/lms/frontend/assets/[^"]*' | head -1)
-          curl -sf -o /dev/null "localhost:8080$asset" && echo "asset served: $asset"
+          asset=$(curl -sf localhost:8080/lms | grep -o '/assets/lms/frontend/assets/[^"]*' | sed -n 1p)
+          [ -n "$asset" ] && curl -sf -o /dev/null "localhost:8080$asset" && echo "asset served: $asset"
           echo "::endgroup::"
           echo "REHEARSAL OK"
 
