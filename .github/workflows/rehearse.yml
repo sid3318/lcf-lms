@@ -62,8 +62,15 @@ jobs:
           up "$OLD"
           login
           csrf=$(curl -sf -b jar localhost:8080/app | grep -o 'csrf_token = "[^"]*"' | cut -d'"' -f2)
-          api() { curl -sf -b jar -X "$1" -H "X-Frappe-CSRF-Token: $csrf" -H 'Content-Type: application/json' -d "$3" "localhost:8080/api/resource/${2// /%20}"; }
-          api POST "LMS Course" '{"title":"Rehearsal course","short_introduction":"x","description":"x","published":1}' >/dev/null
+          # Prints the server's message on failure; curl -f would only say "exit 22".
+          api() {
+            local out code
+            out=$(curl -s -w '\n%{http_code}' -b jar -X "$1" -H "X-Frappe-CSRF-Token: $csrf" -H 'Content-Type: application/json' -d "$3" "localhost:8080/api/resource/${2// /%20}")
+            code=${out##*$'\n'}
+            [[ $code == 2* ]] || { echo "API $1 $2 -> HTTP $code: ${out%$'\n'*}" >&2; return 1; }
+            echo "${out%$'\n'*}"
+          }
+          api POST "LMS Course" '{"title":"Rehearsal course","short_introduction":"x","description":"x","published":1,"instructors":[{"instructor":"Administrator"}]}' >/dev/null
           chapter=$(api POST "Course Chapter" '{"title":"Chapter one","course":"rehearsal-course"}' | jq -r .data.name)
           api PUT "LMS Course/rehearsal-course" "{\"chapters\":[{\"chapter\":\"$chapter\"}]}" >/dev/null
           lesson=$(api POST "Course Lesson" "{\"title\":\"Lesson one\",\"chapter\":\"$chapter\",\"course\":\"rehearsal-course\",\"content\":\"{\\\"blocks\\\":[{\\\"type\\\":\\\"paragraph\\\",\\\"data\\\":{\\\"text\\\":\\\"hello\\\"}}]}\"}" | jq -r .data.name)
