@@ -1,0 +1,74 @@
+name: Build LMS image
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+env:
+  # To upgrade, bump LMS_REF (an LMS release tag) and push. FRAPPE_BRANCH must match
+  # the LMS release line: v15.x runs on version-15, v16.x on version-16.
+  LMS_REF: v15.0.0
+  FRAPPE_BRANCH: version-15
+  # Holds the Containerfile; pinned so a later change there cannot break this build.
+  FRAPPE_DOCKER_REF: adb65c3e6bea083095bb88dc45f589ab37ead072
+
+jobs:
+  build:
+    # ponytail: amd64 only because the VPS is amd64; add an arm64 build if that changes.
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    env:
+      IMAGE: ghcr.io/${{ github.repository }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/checkout@v4
+        with:
+          repository: frappe/frappe_docker
+          ref: ${{ env.FRAPPE_DOCKER_REF }}
+          path: builds
+
+      - name: Write apps.json
+        run: |
+          printf '[{"url":"https://github.com/frappe/payments","branch":"%s"},{"url":"https://github.com/frappe/lms","branch":"%s"}]' \
+            "$FRAPPE_BRANCH" "$LMS_REF" > apps.json
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # frappe_docker reads apps.json as a BuildKit secret. The official LMS workflow still
+      # passes it as a build arg, which is why the official images ship without the LMS app.
+      - name: Build
+        uses: docker/build-push-action@v6
+        with:
+          context: builds
+          file: builds/images/layered/Containerfile
+          load: true
+          tags: ${{ env.IMAGE }}:${{ env.LMS_REF }}
+          labels: org.opencontainers.image.source=https://github.com/${{ github.repository }}
+          build-args: FRAPPE_BRANCH=${{ env.FRAPPE_BRANCH }}
+          secret-files: apps_json=apps.json
+
+      # Fails the run, so nothing is pushed, if the LMS app or a script the Dokploy template calls is missing.
+      - name: Smoke test
+        run: |
+          docker run --rm -e LMS_REF "$IMAGE:$LMS_REF" bash -ec '
+            cat sites/apps.txt
+            grep -qx lms sites/apps.txt
+            env/bin/python -c "import frappe, lms, payments; print(\"frappe\", frappe.__version__, \"lms\", lms.__version__)"
+            [ "$(env/bin/python -c "import lms; print(lms.__version__)")" = "${LMS_REF#v}" ]
+            test -f apps/lms/lms/www/_lms.html
+            test -f sites/assets/assets.json
+            test -d sites/assets/lms/frontend
+            command -v nginx-entrypoint.sh wait-for-it jq curl start.sh'
+
+      - name: Push
+        run: docker push "$IMAGE:$LMS_REF"
